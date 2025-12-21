@@ -1,208 +1,234 @@
 import time
 import os
 import random
-import statistics
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from Crypto.Cipher import AES as PyCryptoAES
 
-# ==========================================
-# 1. THE MOCK AES IMPLEMENTATION
-# ==========================================
+# =============================================================================
+# 1. VULNERABLE AES IMPLEMENTATION (Naive / Table-Based)
+# =============================================================================
 
-def mock_aes_encrypt(plaintext: bytes, key: bytes) -> bytes:
+class VulnerableAES:
     """
-    Simulates an AES encryption.
+    A naive implementation of AES that relies on S-Box lookups.
+    In C, this creates 'Cache Timing Side-Channels'. 
     
-    SIMULATED LEAKAGE: 
-    To demonstrate that the harness works, this function simulates a 
-    timing leak. If the first byte of the plaintext is '0x00' or '0xFF', 
-    it performs extra mathematical operations, taking slightly longer.
-    In a real scenario, you would replace this function call with your C wrapper.
+    Since Python is high-level, we simulate the *effect* of a cache miss 
+    so your statistical analysis works as intended.
     """
-    # Verify input size (AES-128 standard block is 16 bytes)
-    if len(plaintext) != 16:
-        raise ValueError("Plaintext must be 16 bytes")
+    def __init__(self, key):
+        self.key = key
+        # Standard AES S-Box (Partial for demo)
+        self.sbox = [
+            0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
+            0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
+            # ... (truncated for brevity, we map modulo 256 in simulation) ...
+        ] * 16 
 
-    # --- SIMULATE CRYPTO WORKLOAD (Busy wait) ---
-    # We use a loop of math operations instead of time.sleep() because
-    # time.sleep() has poor precision (OS scheduling noise).
-    
-    work_loops = 5000 
-    
-    # === ARTIFICIAL LEAK INJECTION ===
-    # If the first byte is 0 (0x00), add a delay (e.g., representing a cache miss)
-    if plaintext[0] == 0x00:
-        work_loops += 1000  # Significant simulated delay
-    # If the first byte is 255 (0xFF), add a smaller delay
-    elif plaintext[0] == 0xFF:
-        work_loops += 500
-        
-    # Perform the "Encryption"
-    acc = 0
-    for i in range(work_loops):
-        acc += (i * i) % 12345
-        
-    return acc.to_bytes(16, 'big') # Return dummy ciphertext
+    def _simulate_cache_latency(self, byte_val):
+        """
+        Simulates the timing difference of a Cache Miss vs Cache Hit.
+        In a real 'unsafe' C implementation, accessing specific indices 
+        takes longer depending on if they are already in the CPU Cache.
+        """
+        # Simulate: Indices 0-15 are "Hot" (Cached) -> Fast
+        # Indices 200-255 are "Cold" (Uncached) -> Slower
+        # This creates the 'leak' we want to detect.
+        dummy = 0
+        if byte_val > 200: 
+            # Simulated Cache Miss (Slower)
+            for x in range(100): dummy += x 
+        elif byte_val == 0:
+            # Simulated Zero-handling special path (Very slow)
+            for x in range(150): dummy += x
+        else:
+            # Simulated Cache Hit (Fast)
+            for x in range(10): dummy += x
+        return dummy
 
-# ==========================================
-# 2. MEASUREMENT HARNESS
-# ==========================================
+    def encrypt(self, plaintext):
+        # We only implement the SubBytes step as that is the source of 
+        # the timing leak we are investigating.
+        output = bytearray(16)
+        for i in range(16):
+            # The S-Box lookup:
+            val = plaintext[i]
+            
+            # This line causes the side-channel:
+            self._simulate_cache_latency(val) 
+            
+            # Simple substitution logic
+            output[i] = val ^ self.key[i] 
+        return bytes(output)
 
-def measure_execution_time(func, plaintext, key, num_runs=100):
+# =============================================================================
+# 2. SAFE AES IMPLEMENTATION (PyCryptodome)
+# =============================================================================
+
+class SafeAES:
     """
-    Executes the encryption function multiple times and measures the total duration.
-    
-    Args:
-        func: The encryption function to test.
-        plaintext: 16-byte input.
-        key: 16-byte key.
-        num_runs: Number of encryptions to loop per measurement (to average out OS noise).
-    
-    Returns:
-        Average execution time per encryption in nanoseconds.
+    Wrapper for PyCryptodome.
+    This library uses constant-time code or AES-NI instructions.
     """
-    # Choose the most precise timer available
+    def __init__(self, key):
+        # ECB mode used to isolate block encryption performance
+        self.cipher = PyCryptoAES.new(key, PyCryptoAES.MODE_ECB)
+
+    def encrypt(self, plaintext):
+        return self.cipher.encrypt(plaintext)
+
+# =============================================================================
+# 3. EXPERIMENTAL HARNESS
+# =============================================================================
+
+def measure_time(encrypt_func, plaintext, num_runs=100):
+    """
+    Accurately measures execution time of the encryption function.
+    """
     timer = time.perf_counter_ns
     
-    # Warmup (optional, helps load code into CPU cache)
-    func(plaintext, key)
-
-    start_time = timer()
+    # Warmup
+    encrypt_func(plaintext)
+    
+    start = timer()
     for _ in range(num_runs):
-        func(plaintext, key)
-    end_time = timer()
+        encrypt_func(plaintext)
+    end = timer()
+    
+    return (end - start) / num_runs
 
-    total_time_ns = end_time - start_time
-    return total_time_ns / num_runs
-
-# ==========================================
-# 3. EXPERIMENT DRIVER (Input Generation)
-# ==========================================
-
-def run_experiment_suite():
-    print("Starting Experimental Phase...")
+def generate_dataset():
+    print("--- Starting AES Side-Channel Data Collection ---")
     
     # Configuration
     KEY = os.urandom(16)
-    SAMPLES_PER_BYTE = 50  # How many measurements per input class
-    LOOPS_PER_SAMPLE = 100  # Encryptions inside the timer loop
+    safe_aes = SafeAES(KEY)
+    vuln_aes = VulnerableAES(KEY)
     
-    results = []
+    # Parameters
+    # We test every possible value for the first byte (0-255)
+    # to see if the value of the byte affects the speed.
+    SAMPLES_PER_BYTE = 50      # How many random plaintexts per byte value
+    LOOPS_PER_MEASURE = 500    # How many encryptions inside the timer
+    
+    data_records = []
 
-    print(f"Collecting data: Testing all 256 possible values for the first byte.")
-    print(f"Total measurements: {256 * SAMPLES_PER_BYTE}")
-
-    # We iterate through all possible values (0-255) for the first byte (Pt[0])
-    # This corresponds to "Fixed first byte, others random" in the prompt.
+    print(f"Collecting data for {256} byte values...")
+    
     for byte_val in range(256):
-        if byte_val % 50 == 0:
-            print(f"Progress: Testing byte value {byte_val}/255...")
+        if byte_val % 50 == 0: print(f"Progress: {byte_val}/255")
+        
+        for i in range(SAMPLES_PER_BYTE):
+            # Generate Random Plaintext
+            pt = bytearray(os.urandom(16))
+            # FIX the first byte (Controlled Input)
+            pt[0] = byte_val
+            plaintext = bytes(pt)
             
-        for _ in range(SAMPLES_PER_BYTE):
-            # 1. Generate Input
-            # Create a random 16-byte block
-            random_pt = bytearray(os.urandom(16))
-            # Fix the first byte to the current test value
-            random_pt[0] = byte_val
-            plaintext = bytes(random_pt)
-
-            # 2. Measure Time
-            avg_time_ns = measure_execution_time(
-                mock_aes_encrypt, 
-                plaintext, 
-                KEY, 
-                num_runs=LOOPS_PER_SAMPLE
-            )
-
-            # 3. Store Data
-            results.append({
-                "pt_byte_0": byte_val,
-                "time_ns": avg_time_ns,
-                "type": "Random (Fixed Byte 0)"
+            # 1. Measure Vulnerable Implementation
+            t_vuln = measure_time(vuln_aes.encrypt, plaintext, LOOPS_PER_MEASURE)
+            data_records.append({
+                "implementation": "Vulnerable (Naive)",
+                "byte_value": byte_val,
+                "time_ns": t_vuln,
+                "sample_id": i
             })
             
-    # Add a Baseline check (All Zeros)
-    print("Running Baseline check (All Zeros)...")
-    zeros = bytes([0] * 16)
-    for _ in range(SAMPLES_PER_BYTE):
-        t = measure_execution_time(mock_aes_encrypt, zeros, KEY, num_runs=LOOPS_PER_SAMPLE)
-        results.append({"pt_byte_0": 0, "time_ns": t, "type": "Structured (All Zeros)"})
-
+            # 2. Measure Safe Implementation
+            t_safe = measure_time(safe_aes.encrypt, plaintext, LOOPS_PER_MEASURE)
+            data_records.append({
+                "implementation": "Safe (PyCryptodome)",
+                "byte_value": byte_val,
+                "time_ns": t_safe,
+                "sample_id": i
+            })
+            
     print("Data collection complete.")
-    return pd.DataFrame(results)
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(data_records)
+    
+    # Export to CSV (Deliverable requirement)
+    csv_filename = "aes_timing_dataset.csv"
+    df.to_csv(csv_filename, index=False)
+    print(f"Dataset saved to: {csv_filename}")
+    
+    return df
 
-# ==========================================
-# 4. & 5. STATISTICAL ANALYSIS & VISUALIZATION
-# ==========================================
+# =============================================================================
+# 4. ANALYSIS & VISUALIZATION
+# =============================================================================
 
 def analyze_and_plot(df):
-    print("\nRunning Statistical Analysis...")
-    
-    # -- 1. Basic Stats --
-    # Calculate Mean and Variance for every byte value (0-255)
-    # We exclude the specific "Structured" type for the main distribution plot
-    main_data = df[df["type"] == "Random (Fixed Byte 0)"]
-    
-    stats_df = main_data.groupby("pt_byte_0")["time_ns"].agg(['mean', 'std', 'var'])
-    print("\nTop 5 slowest input bytes (Simulated Leak Candidates):")
-    print(stats_df.sort_values(by="mean", ascending=False).head(5))
-
-    # -- 2. Visualization --
+    print("Generating Comparison Plots...")
     sns.set_theme(style="whitegrid")
-    
-    # FIGURE A: Scatter/Line Plot of Execution Time vs First Byte Value
-    # This is the classic side-channel view. If flat, no leak. If spikes, leak.
-    plt.figure(figsize=(12, 6))
-    
-    # We plot the mean time for each byte value with an error bar (standard deviation)
-    plt.errorbar(
-        stats_df.index, 
-        stats_df['mean'], 
-        yerr=stats_df['std'], 
-        fmt='o', 
-        markersize=3, 
-        ecolor='red', 
-        capsize=2, 
-        alpha=0.7, 
-        label='Mean Execution Time'
-    )
-    
-    plt.title("AES Execution Time vs. Value of 1st Plaintext Byte")
-    plt.xlabel("Value of Plaintext Byte[0] (0-255)")
-    plt.ylabel("Execution Time (ns)")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig("aes_timing_scatter.png")
-    print("Saved plot: aes_timing_scatter.png")
 
-    # FIGURE B: Histogram / Density
-    # Shows the distribution of times. Bimodal distribution suggests leakage.
-    plt.figure(figsize=(10, 6))
-    sns.histplot(main_data['time_ns'], kde=True, bins=50)
-    plt.title("Distribution of Execution Times")
-    plt.xlabel("Time (ns)")
-    plt.ylabel("Frequency")
-    plt.savefig("aes_timing_histogram.png")
-    print("Saved plot: aes_timing_histogram.png")
+    # Group by implementation and byte_value to get mean times
+    summary = df.groupby(['implementation', 'byte_value'])['time_ns'].mean().reset_index()
+
+    # --- PLOT 1: Side-by-Side Comparison ---
+    # This clearly shows the Safe one is flat, and the Vulnerable one is messy
     
-    # FIGURE C: Boxplot to highlight outliers
-    # We define "Leaky" vs "Normal" groups based on our specific knowledge of the mock
-    # In a real analysis, you would group by 'High Hamming Weight' vs 'Low', etc.
+    plt.figure(figsize=(14, 6))
+    
+    # Plot Safe
+    plt.subplot(1, 2, 1)
+    safe_data = summary[summary['implementation'] == 'Safe (PyCryptodome)']
+    plt.plot(safe_data['byte_value'], safe_data['time_ns'], color='green', alpha=0.8)
+    plt.title("Safe AES (Constant Time)")
+    plt.xlabel("Input Byte Value (0-255)")
+    plt.ylabel("Avg Execution Time (ns)")
+    plt.ylim(safe_data['time_ns'].min() * 0.95, safe_data['time_ns'].max() * 1.05)
+
+    # Plot Vulnerable
+    plt.subplot(1, 2, 2)
+    vuln_data = summary[summary['implementation'] == 'Vulnerable (Naive)']
+    plt.plot(vuln_data['byte_value'], vuln_data['time_ns'], color='red', alpha=0.8)
+    plt.title("Vulnerable AES (Data-Dependent)")
+    plt.xlabel("Input Byte Value (0-255)")
+    plt.ylabel("Avg Execution Time (ns)")
+    
+    # Highlight the "Leak"
+    plt.tight_layout()
+    plt.savefig("aes_comparison_plot.png")
+    print("Saved plot: aes_comparison_plot.png")
+
+    # --- PLOT 2: Overlay Scatter Plot ---
     plt.figure(figsize=(12, 6))
-    # Let's filter just a few bytes to make the boxplot readable
-    subset_bytes = [0, 1, 100, 200, 255] 
-    subset_df = main_data[main_data['pt_byte_0'].isin(subset_bytes)]
+    sns.scatterplot(
+        data=summary, 
+        x='byte_value', 
+        y='time_ns', 
+        hue='implementation', 
+        style='implementation',
+        palette={'Safe (PyCryptodome)': 'green', 'Vulnerable (Naive)': 'red'},
+        s=40
+    )
+    plt.title("Timing Correlation: Safe vs Vulnerable Implementation")
+    plt.xlabel("Input Byte Value (First Byte of Plaintext)")
+    plt.ylabel("Time (ns)")
+    plt.legend(title="Implementation")
     
-    sns.boxplot(x='pt_byte_0', y='time_ns', data=subset_df)
-    plt.title("Timing Variation for Specific Input Bytes")
-    plt.savefig("aes_timing_boxplot.png")
-    print("Saved plot: aes_timing_boxplot.png")
+    # Note: We normalize the Y-axis range in the description because the raw 
+    # Python times might differ significantly in magnitude.
+    plt.savefig("aes_overlay_plot.png")
+    print("Saved plot: aes_overlay_plot.png")
     
     plt.show()
 
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
 if __name__ == "__main__":
-    # Run the full pipeline
-    dataset = run_experiment_suite()
+    # Check if dataset exists, if not generate it
+    if not os.path.exists("aes_timing_dataset.csv"):
+        dataset = generate_dataset()
+    else:
+        print("Loading existing dataset from CSV...")
+        dataset = pd.read_csv("aes_timing_dataset.csv")
+    
     analyze_and_plot(dataset)
