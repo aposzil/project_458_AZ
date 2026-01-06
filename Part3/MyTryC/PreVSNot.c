@@ -229,7 +229,7 @@ int main(void) {
     // pin_to_cpu0(); // enable if you want lower noise
 
     uint8_t key[BLOCK_SIZE] = {
-        0x3C, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00
@@ -269,3 +269,4 @@ int main(void) {
     printf("Done. Results written to sbox_precomputed_vs_algebraic_P3_v2.csv\n");
     return 0;
 }
+
