@@ -141,10 +141,10 @@ static void leaky_dummy(uint8_t byte_val) {
     }
 }
 
-static void constant_dummy(uint8_t byte_val) {
+static void constant_dummy(void) {
     // matches your Python CT dummy loop count (=4)
     volatile int dummy = 0;
-    for (int x = 0; x < 4; x++) dummy += (x ^ byte_val);
+    for (int x = 0; x < 4; x++) dummy += x;
 }
 
 // ---------------- AES-like steps: AddRoundKey + SubBytes ----------------
@@ -166,7 +166,7 @@ static void sub_bytes_vulnerable(uint8_t state[BLOCK_SIZE]) {
 static void sub_bytes_algebraic(uint8_t state[BLOCK_SIZE]) {
     for (int i = 0; i < BLOCK_SIZE; i++) {
         uint8_t val = state[i];          // val = (pt ^ key)
-        constant_dummy(val);             // fixed work
+        constant_dummy();             // fixed work
         state[i] = algebraic_sbox(val);  // computed, fixed operations
     }
 }
@@ -269,4 +269,5 @@ int main(void) {
     printf("Done. Results written to sbox_precomputed_vs_algebraic_P3_v2.csv\n");
     return 0;
 }
+
 
