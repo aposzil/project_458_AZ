@@ -6,7 +6,7 @@ WSL
 
 ~	cd ./MyTryC/
 
-~	gcc -O2 -march=native -Wall ./MyTryC/PreVSNot.c -o sbox_timing
+~	gcc -O2 -march=native -Wall ./PreVSNot.c -o sbox_timing
 
 		!! warning because not used a pin func !!
 
@@ -27,6 +27,7 @@ WSL
 ~	python3 ./EvalBearAES.py <---- Αυτο για να δειξω διαφορά σε χρονους αναλογα το implementation και πως χανεις ταχυτητα με την περισσοτερη ασφαλεια.
 
 ~	cd ..
+
 
 
 
