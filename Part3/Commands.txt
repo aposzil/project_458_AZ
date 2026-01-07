@@ -1,3 +1,5 @@
+----------->   i have also in ./BestOutput a good run with small noise at a .csv and the plots of that run <-----------------------
+
 WSL 
 
 ######################## in the file ./MyTryC i have an example of Pre-computed S-Box and Algebraic calculated sbox in C #############################
@@ -26,5 +28,6 @@ WSL
 
 ~	cd ..
 
-################### i have also in ./BestOutput a good run with small noise at a .csv and the plots of that run ##############################
+
+
 

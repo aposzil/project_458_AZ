@@ -114,17 +114,15 @@ static const uint8_t AES_SBOX[256] = {
 
 // ---------------- Algebraic S-box (toy CT) ----------------
 
-static inline uint8_t rotl8(uint8_t x, unsigned n) {
-    return (uint8_t)((x << n) | (x >> (8 - n)));
-}
-
-// Same as your Python _algebraic_sbox (not real AES S-box)
 static inline uint8_t algebraic_sbox(uint8_t x) {
+    // x * 17 is the same as (x << 4) + x
     uint8_t y = (uint8_t)(x * 17u);
-    y ^= rotl8(x, 1);
-    y ^= rotl8(x, 2);
-    y ^= 0x5Au;
-    return y;
+    
+    // Inline 8-bit left rotation by 1
+    // (x << 1) gets high bits, (x >> 7) wraps the MSB to the LSB
+    uint8_t rot = (uint8_t)((x << 1) | (x >> 7));
+    
+    return y ^ rot ^ 0x5Au;
 }
 
 // ---------------- Dummy work (match your Python loops) ----------------
@@ -257,11 +255,14 @@ int main(void) {
             pt[0] = (uint8_t)byte;
             for (int i = 1; i < BLOCK_SIZE; i++) pt[i] = 0x01;
 
+            double ns_alg = measure_ns(encrypt_algebraic, key, pt, LOOPS_PER_MEASURE);
+            fprintf(fp, "Algebraic_SBox,%d,%.2f,%d\n", byte, ns_alg, s);
+
             double ns_pre = measure_ns(encrypt_precomputed, key, pt, LOOPS_PER_MEASURE);
             fprintf(fp, "Precomputed_SBox,%d,%.2f,%d\n", byte, ns_pre, s);
 
-            double ns_alg = measure_ns(encrypt_algebraic, key, pt, LOOPS_PER_MEASURE);
-            fprintf(fp, "Algebraic_SBox,%d,%.2f,%d\n", byte, ns_alg, s);
+            
+            
         }
     }
 
